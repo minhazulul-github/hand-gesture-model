@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Gesture Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        #video-container { position: absolute; bottom: 10px; right: 10px; width: 200px; border: 2px solid white; z-index: 10; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+    <video id="webcam" autoplay playsinline style="display:none;"></video>
+    <div id="video-container"><canvas id="output_canvas" style="width: 100%;"></canvas></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
+
+        // --- 1. Three.js Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const particleCount = 10000;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        const colors = new Float32Array(particleCount * 3);
+
+        for (let i = 0; i < particleCount * 3; i++) {
+            positions[i] = (Math.random() - 0.5) * 10;
+            colors[i] = Math.random();
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const material = new THREE.PointsMaterial({ size: 0.05, vertexColors: true, transparent: true, opacity: 0.8 });
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        camera.position.z = 5;
+
+        // --- 2. Hand Tracking Logic ---
+        let handLandmarker;
+        const video = document.getElementById("webcam");
+
+        async function initHandTracking() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+            });
+        }
+
+        let pinchDistance = 0;
+        let handX = 0, handY = 0;
+
+        async function predictWebcam() {
+            const results = await handLandmarker.detectForVideo(video, performance.now());
+            if (results.landmarks && results.landmarks[0]) {
+                const hand = results.landmarks[0];
+                
+                // Track Index (8) and Thumb (4) to calculate "Pinch"
+                const dx = hand[8].x - hand[4].x;
+                const dy = hand[8].y - hand[4].y;
+                pinchDistance = Math.sqrt(dx*dx + dy*dy);
+
+                // Map hand position to 3D space
+                handX = (hand[9].x - 0.5) * -10; // Normalized center of hand
+                handY = (hand[9].y - 0.5) * -10;
+            }
+            requestAnimationFrame(predictWebcam);
+        }
+
+        // --- 3. Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const posAttr = particles.geometry.attributes.position;
+            for (let i = 0; i < particleCount; i++) {
+                const ix = i * 3;
+                
+                // Behavior: Particles gravitate toward hand or expand based on pinch
+                const targetX = handX + (Math.sin(i + performance.now() * 0.001) * pinchDistance * 5);
+                const targetY = handY + (Math.cos(i + performance.now() * 0.002) * pinchDistance * 5);
+
+                posAttr.array[ix] += (targetX - posAttr.array[ix]) * 0.02;
+                posAttr.array[ix+1] += (targetY - posAttr.array[ix+1]) * 0.02;
+            }
+            
+            posAttr.needsUpdate = true;
+            particles.rotation.y += 0.002;
+            renderer.render(scene, camera);
+        }
+
+        initHandTracking();
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
